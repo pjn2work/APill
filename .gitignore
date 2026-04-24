@@ -59,5 +59,3 @@ node_modules/
 # Environment variables
 .env.local
 .env.*.local
-
-pills_data.json

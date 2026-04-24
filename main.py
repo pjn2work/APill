@@ -471,7 +471,7 @@ def create_dashboard_view(page_ref=None):
                         ft.Container(
                             content=ft.Column([
                                 ft.Text(next_time_str, size=24, weight=ft.FontWeight.BOLD, color=main_color),
-                                ft.Text("next", size=10, color=ft.Colors.GREY_600),
+                                ft.Text("next take", size=10, color=ft.Colors.GREY_600),
                             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                             width=85,
                             alignment=ft.Alignment.CENTER,
@@ -885,7 +885,6 @@ def create_categories_view(page_ref=None):
                         ),
                         # Category info and edit
                         ft.Column([
-                            ft.Text(f"{key}", size=12, color=ft.Colors.GREY_600),
                             name_field,
                         ], expand=True, spacing=4),
                     ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),

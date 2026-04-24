@@ -131,4 +131,4 @@ The app consists of:
 
 ## License
 
-MIT License - Feel free to modify and use as needed.
+Apache License 2.0 - See the [LICENSE](LICENSE) file for details.
