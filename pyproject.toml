@@ -5,7 +5,16 @@ description = "Medication alarm and schedule manager"
 
 [tool.flet.app]
 name = "apill"
+exclude = ["pills_data.json"]
 
 [tool.flet.build]
 build_number = 1
 build_version = "1.0.0"
+
+[tool.flet.android.permission]
+"android.permission.POST_NOTIFICATIONS" = true
+"android.permission.SCHEDULE_EXACT_ALARM" = true
+"android.permission.RECEIVE_BOOT_COMPLETED" = true
+
+[tool.flet.dev_packages]
+flet-android-notifications = "flet_android_notifications"

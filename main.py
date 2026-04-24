@@ -7,8 +7,18 @@ from datetime import datetime, timedelta
 import uuid
 
 # ================= CONFIG & CONSTANTS =================
-STORAGE_FILE = "pills_data.json"
-ALARM_CHECK_INTERVAL = 10  # seconds
+def _resolve_storage_file(filename: str) -> str:
+    """On Android, Flet extracts the app to .../files/flet/app/ and wipes it on
+    every APK update. Store user data in .../files/ (two levels up) which
+    Android preserves across updates. On desktop the cwd stays unchanged."""
+    import os
+    cwd = os.getcwd()
+    if cwd.endswith("/flet/app"):
+        return os.path.join(os.path.normpath(os.path.join(cwd, "..", "..")), filename)
+    return filename
+
+STORAGE_FILE = _resolve_storage_file("pills_data.json")
+ALARM_CHECK_INTERVAL = 8  # seconds
 TIMELINE_SCALE = 1.0  # pixels per minute of spacing
 
 # Category colors: (main_color, light_background_color)
@@ -279,7 +289,16 @@ async def alarm_loop(page, manager):
                 total_takes = pill["duration_days"] * pill["times_per_day"]
                 completed = calculate_expected_takes(pill)
                 remaining = total_takes - completed
-                show_alarm_modal(page, pill, remaining, now.strftime("%H:%M"))
+                take_time = now.strftime("%H:%M")
+                if android_notifications:
+                    await android_notifications.show_notification(
+                        notification_id=abs(hash(pill["id"])) % 100000,
+                        title=f"Take {pill['name']}",
+                        body=f"{take_time} · {pill.get('description', '')}".strip(" · "),
+                    )
+                show_alarm_modal(page, pill, remaining, take_time)
+                if alarm_audio:
+                    await alarm_audio.play()
                 continue
 
             next_alarm = get_next_alarm(pill)
@@ -287,7 +306,16 @@ async def alarm_loop(page, manager):
                 total_takes = pill["duration_days"] * pill["times_per_day"]
                 completed = calculate_expected_takes(pill)
                 remaining = total_takes - completed
-                show_alarm_modal(page, pill, remaining, next_alarm.strftime("%H:%M"))
+                take_time = next_alarm.strftime("%H:%M")
+                if android_notifications:
+                    await android_notifications.show_notification(
+                        notification_id=abs(hash(pill["id"])) % 100000,
+                        title=f"Take {pill['name']}",
+                        body=f"{take_time} · {pill.get('description', '')}".strip(" ·"),
+                    )
+                show_alarm_modal(page, pill, remaining, take_time)
+                if alarm_audio:
+                    await alarm_audio.play()
 
 
 # ================= UI COMPONENTS =================
@@ -321,8 +349,17 @@ def gradient_header(title, leading=None):
 
 
 def show_alarm_modal(page, pill, remaining, take_time):
-    if alarm_audio:
-        asyncio.create_task(alarm_audio.play())
+    pid = pill["id"]
+
+    async def on_snooze(e):
+        await _handle_snooze(page, pid)
+
+    async def on_done(e):
+        await _handle_done(page, pid)
+
+    async def on_dismiss(e):
+        await _stop_alarm()
+        page.update()
 
     dlg = ft.AlertDialog(
         title=ft.Text(f"⏰ Take {pill['name']}", size=20),
@@ -334,26 +371,26 @@ def show_alarm_modal(page, pill, remaining, take_time):
             ft.Row([
                 ft.FilledButton("🔔 Snooze 10min",
                                   icon=ft.icons.Icons.ACCESS_TIME,
-                                  on_click=lambda e, p=pill["id"]: _handle_snooze(page, p)),
+                                  on_click=on_snooze),
                 ft.FilledButton("✅ Done",
                                   icon=ft.icons.Icons.CHECK,
                                   bgcolor=ft.Colors.GREEN_400,
                                   color=ft.Colors.WHITE,
-                                  on_click=lambda e, p=pill["id"]: _handle_done(page, p)),
+                                  on_click=on_done),
             ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
         ], tight=True),
-        on_dismiss=lambda e: (_stop_alarm(), page.update()),
+        on_dismiss=on_dismiss,
     )
     page.show_dialog(dlg)
 
 
-def _stop_alarm():
+async def _stop_alarm():
     if alarm_audio:
-        asyncio.create_task(alarm_audio.pause())
+        await alarm_audio.pause()
 
 
-def _handle_snooze(page, pill_id):
-    _stop_alarm()
+async def _handle_snooze(page, pill_id):
+    await _stop_alarm()
     manager.snooze_pill(pill_id)
     page.pop_dialog()
     snack_bar = ft.SnackBar(content=ft.Text("Snoozed for 10 minutes"), open=True)
@@ -361,8 +398,8 @@ def _handle_snooze(page, pill_id):
     page.update()
 
 
-def _handle_done(page, pill_id):
-    _stop_alarm()
+async def _handle_done(page, pill_id):
+    await _stop_alarm()
     manager.mark_done(pill_id)
     page.pop_dialog()
     snack_bar = ft.SnackBar(content=ft.Text("Marked as taken!"), open=True)
@@ -552,11 +589,11 @@ def create_dashboard_view(page_ref=None):
                             # Row 1: name (left) | category (right)
                             ft.Row([
                                 ft.Text(p["name"], size=15, weight=ft.FontWeight.BOLD, expand=True),
-                                ft.Text(category_name, size=10, color=ft.Colors.GREY_600),
+                                ft.Text(category_name, size=12, color=ft.Colors.GREY_600),
                             ]),
                             # Row 2: description
                             ft.Row([
-                                ft.Text(p["description"], size=11, color=ft.Colors.GREY_600, expand=True),
+                                ft.Text(p["description"], size=12, color=ft.Colors.GREY_600, expand=True),
                             ]),
                             # Row 3: scheduled times (left) | buttons (right)
                             ft.Row([
@@ -582,13 +619,13 @@ def create_dashboard_view(page_ref=None):
                             ], spacing=0),
                             # Row 4: stats
                             ft.Row([
-                                ft.Text(f"✓ {completed_takes}", size=10, color=ft.Colors.GREEN_600),
-                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
-                                ft.Text(f"⏳ {remaining_takes}", size=10, color=ft.Colors.ORANGE_600),
-                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
-                                ft.Text(f"🗓 {start_date_display}", size=10, color=ft.Colors.PURPLE_600),
-                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
-                                ft.Text(f"📅 {last_day_str}", size=10, color=ft.Colors.BLUE_600),
+                                ft.Text(f"✓ {completed_takes}", size=12, color=ft.Colors.GREEN_600),
+                                ft.Text("•", size=12, color=ft.Colors.GREY_400),
+                                ft.Text(f"⏳ {remaining_takes}", size=12, color=ft.Colors.ORANGE_600),
+                                ft.Text("•", size=12, color=ft.Colors.GREY_400),
+                                ft.Text(f"🗓 {start_date_display}", size=12, color=ft.Colors.PURPLE_600),
+                                ft.Text("•", size=12, color=ft.Colors.GREY_400),
+                                ft.Text(f"📅 {last_day_str}", size=12, color=ft.Colors.BLUE_600),
                             ], spacing=3),
                         ], expand=True, spacing=2),
                     ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -687,6 +724,46 @@ def create_dashboard_view(page_ref=None):
 
     pills_column = ft.Column(render_pills(), scroll=ft.ScrollMode.AUTO, expand=True)
 
+    async def do_export(e):
+        if not export_picker:
+            return
+        try:
+            data = open(STORAGE_FILE, "rb").read()
+            await export_picker.save_file(
+                file_name="pills_data.json",
+                allowed_extensions=["json"],
+                src_bytes=data,
+            )
+        except Exception as ex:
+            page_ref.overlay.append(ft.SnackBar(content=ft.Text(f"Export failed: {ex}"), open=True))
+            page_ref.update()
+
+    async def do_import(e):
+        if not import_picker:
+            return
+        try:
+            files = await import_picker.pick_files(
+                allowed_extensions=["json"],
+                allow_multiple=False,
+                with_data=True,
+            )
+            if not files:
+                return
+            raw = files[0].bytes.decode("utf-8")
+            parsed = json.loads(raw)
+            if "agenda" not in parsed:
+                raise ValueError("Not a valid APill backup")
+            with open(STORAGE_FILE, "w") as f:
+                f.write(raw)
+            global manager
+            manager = PillManager(STORAGE_FILE)
+            refresh_views(page_ref)
+            page_ref.overlay.append(ft.SnackBar(content=ft.Text("Data imported successfully"), open=True))
+            page_ref.update()
+        except Exception as ex:
+            page_ref.overlay.append(ft.SnackBar(content=ft.Text(f"Import failed: {ex}"), open=True))
+            page_ref.update()
+
     def go_to_timeline(e):
         if page_ref:
             page_ref.views.clear()
@@ -725,6 +802,19 @@ def create_dashboard_view(page_ref=None):
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
                 ft.Container(height=10),
                 pills_column,
+                ft.Divider(),
+                ft.Row([
+                    ft.OutlinedButton(
+                        "Import",
+                        icon=ft.icons.Icons.UPLOAD_FILE,
+                        on_click=do_import,
+                    ),
+                    ft.OutlinedButton(
+                        "Export",
+                        icon=ft.icons.Icons.DOWNLOAD,
+                        on_click=do_export,
+                    ),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
                 ft.Container(height=10),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
             padding=10,
@@ -1039,10 +1129,13 @@ def create_categories_view(page_ref=None):
 
 # ================= APP INITIALIZATION =================
 alarm_audio = None
+android_notifications = None
+export_picker = None
+import_picker = None
 
 
 def main(p: ft.Page):
-    global manager, page, alarm_audio
+    global manager, page, alarm_audio, android_notifications, export_picker, import_picker
     manager = PillManager(STORAGE_FILE)
     page = p
 
@@ -1052,8 +1145,12 @@ def main(p: ft.Page):
     page.window_height = 640
     page.window_min_width = 320
 
+    export_picker = ft.FilePicker()
+    import_picker = ft.FilePicker()
+    page.services.append(export_picker)
+    page.services.append(import_picker)
+
     if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-        page.window.full_screen = True
         alarm_audio = fta.Audio(
             src="/alarm.wav",
             autoplay=False,
@@ -1061,6 +1158,15 @@ def main(p: ft.Page):
             release_mode=fta.ReleaseMode.LOOP,
         )
         page.services.append(alarm_audio)
+
+    if page.platform == ft.PagePlatform.ANDROID:
+        from flet_android_notifications import FletAndroidNotifications
+        android_notifications = FletAndroidNotifications()
+
+        async def _request_notification_permissions():
+            await android_notifications.request_permissions()
+
+        asyncio.create_task(_request_notification_permissions())
 
     def on_route_change(e):
         page.views.clear()

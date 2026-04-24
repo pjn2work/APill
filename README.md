@@ -37,57 +37,85 @@ The app will open in a window. You can also access it at `http://127.0.0.1:8550`
 
 ### Android (APK)
 
-#### One-time setup
+#### Step 1 — One-time environment setup (macOS)
 
-The build requires Android SDK `platforms;android-35`. The bundled `sdkmanager` needs `--no_https` to reach Google's servers. Run this once:
+Install the required Android SDK platform. The bundled `sdkmanager` needs `--no_https` to reach Google's servers:
 
 ```bash
 yes | ~/Library/Android/sdk/cmdline-tools/latest/bin/sdkmanager --no_https "platforms;android-35"
 ```
 
-Python 3.11+ on macOS may have SSL issues downloading the Flet build template from GitHub. Download it manually once with curl:
+#### Step 2 — Download and patch the Flet build template
+
+Python 3.11+ on macOS has SSL issues downloading from GitHub. The template file lives in `/tmp` and is lost on reboot, so re-run this whenever it's missing.
+
+Download:
 
 ```bash
 curl -L -o /tmp/flet-build-template.zip \
   "https://github.com/flet-dev/flet/releases/download/v0.84.0/flet-build-template.zip"
 ```
 
-#### Build the APK
+Patch it to enable Java core library desugaring (required by `flet-android-notifications`):
+
+```bash
+cd /tmp && unzip -o flet-build-template.zip -d flet-build-template > /dev/null
+
+# Enable desugaring in compileOptions
+sed -i '' 's/sourceCompatibility = JavaVersion.VERSION_17/isCoreLibraryDesugaringEnabled = true\n        sourceCompatibility = JavaVersion.VERSION_17/' \
+  "/tmp/flet-build-template/build/{{cookiecutter.out_dir}}/android/app/build.gradle.kts"
+
+# Add desugar library to dependencies
+sed -i '' 's/^dependencies {}$/dependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}/' \
+  "/tmp/flet-build-template/build/{{cookiecutter.out_dir}}/android/app/build.gradle.kts"
+
+cd /tmp/flet-build-template && zip -r /tmp/flet-build-template.zip . > /dev/null
+cd -
+```
+
+#### Step 3 — Delete the package hash stamp
+
+Flet has a caching bug: adding or changing packages in `requirements.txt` does not invalidate the cached site-packages. Always delete the hash stamp before building to ensure new packages are bundled:
+
+```bash
+rm -f build/.hash/package
+```
+
+#### Step 4 — Build the APK
 
 ```bash
 flet build apk --yes --template /tmp/flet-build-template.zip --skip-flutter-doctor
 ```
 
-The APK will be generated at `build/apk/APill.apk`.
+The APK will be generated at `build/apk/APill.apk` (~81 MB).
 
-> **Important — after changing `requirements.txt`:** Flet has a caching bug where adding a new package (e.g. `flet-audio`) doesn't invalidate the package hash. You must delete the hash stamp before rebuilding, otherwise the new package won't be bundled:
+> **If pubspec.yaml is missing flet_audio after the build**, run:
 > ```bash
-> rm -f build/.hash/package
-> flet build apk --yes --template /tmp/flet-build-template.zip --skip-flutter-doctor
+> cd build/flutter && flutter pub get
 > ```
-> Then verify `build/flutter/pubspec.yaml` contains `flet_audio` and run `cd build/flutter && flutter pub get` if it's missing.
 
-#### Install on Device via ADB
+#### Step 5 — Install on device via ADB
 
 1. Enable **USB debugging** in Developer Options on your phone
-2. Connect the phone via USB and accept the trust prompt on the phone
+2. Connect the phone via USB and accept the trust prompt
 3. Verify the device is detected:
 
 ```bash
 adb devices
 ```
 
-3. Install:
-
-```bash
-adb install build/apk/APill.apk
-```
-
-To reinstall after a new build (without uninstalling first):
+4. Install (use `-r` to reinstall without uninstalling first):
 
 ```bash
 adb install -r build/apk/APill.apk
 ```
+
+> **If the app shows a blank screen after reinstalling**, Flet caches the Python bundle on the device and may not clear it on `adb install -r`. Force-clear the cache before reinstalling:
+> ```bash
+> adb shell am force-stop com.pjn2work.apill
+> adb shell pm clear com.pjn2work.apill
+> adb install -r build/apk/APill.apk
+> ```
 
 ### iOS (IPA)
 
