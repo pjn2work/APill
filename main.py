@@ -1,4 +1,5 @@
 import flet as ft
+import flet_audio as fta
 import json
 import os
 import asyncio
@@ -49,16 +50,20 @@ class PillManager:
             self._save()
 
     def _check_and_disable_completed(self):
-        """Auto-disable pills that have completed all their doses"""
+        """Auto-disable pills that have completed all their doses, and sync completed_takes."""
         changed = False
         for pill_id, p in self.agenda.items():
-            if not p.get("active", True):
-                continue  # Already disabled
-
-            # Check if all doses are completed
-            total_takes = p["duration_days"] * p["times_per_day"]
             expected_takes = self._calculate_expected_takes_from_pill(p)
 
+            # Sync completed_takes to JSON
+            if p.get("completed_takes", 0) != expected_takes:
+                p["completed_takes"] = expected_takes
+                changed = True
+
+            if not p.get("active", True):
+                continue
+
+            total_takes = p["duration_days"] * p["times_per_day"]
             if expected_takes >= total_takes:
                 p["active"] = False
                 changed = True
@@ -68,26 +73,7 @@ class PillManager:
 
     def _calculate_expected_takes_from_pill(self, pill):
         """Helper to calculate expected takes from a pill dict"""
-        start_date_str = pill.get("start_date")
-        if not start_date_str:
-            return pill.get("completed_takes", 0)
-
-        from datetime import date
-        start_date = date.fromisoformat(start_date_str)
-        current_date = datetime.now().date()
-        current_datetime = datetime.now()
-
-        # Calculate total days elapsed
-        days_elapsed = (current_date - start_date).days
-
-        # Calculate total doses that should have occurred
-        total_doses_passed = days_elapsed * pill["times_per_day"]
-
-        # Check today's schedule to see which doses have passed
-        today_times = get_today_schedule(pill)
-        today_passed = sum(1 for t in today_times if t <= current_datetime)
-
-        return total_doses_passed + today_passed
+        return calculate_expected_takes(pill)
 
     def _save(self):
         with open(self.filepath, "w") as f:
@@ -110,11 +96,11 @@ class PillManager:
         # Don't store ID inside pill_data, it's the key
         if "id" in pill_data:
             del pill_data["id"]
-        pill_data["completed_takes"] = 0
+        pill_data.setdefault("completed_takes", 0)
         pill_data["last_alarm_time"] = None
         pill_data["snoozed_until"] = None
         pill_data["active"] = True
-        pill_data["start_date"] = datetime.now().date().isoformat()  # Store start date
+        pill_data.setdefault("start_date", datetime.now().date().isoformat())
         self.agenda[pill_id] = pill_data
         self._save()
 
@@ -133,14 +119,14 @@ class PillManager:
     def mark_done(self, pill_id):
         if pill_id in self.agenda:
             p = self.agenda[pill_id]
-            # Don't increment completed_takes manually - it's auto-calculated from start_date
-            # Just update the last alarm time and clear snooze
             p["last_alarm_time"] = datetime.now().isoformat()
             p["snoozed_until"] = None
 
-            # Check if all doses are completed
-            total_takes = p["duration_days"] * p["times_per_day"]
+            # Persist the calculated count so the JSON stays accurate
             expected_takes = self._calculate_expected_takes_from_pill(p)
+            p["completed_takes"] = expected_takes
+
+            total_takes = p["duration_days"] * p["times_per_day"]
             if expected_takes >= total_takes:
                 p["active"] = False
 
@@ -233,28 +219,37 @@ def get_next_alarm(pill):
 
 
 def calculate_expected_takes(pill):
-    """Calculate how many doses should have been taken based on start_date and current time"""
+    """Calculate how many doses should have been taken based on start_date+start_time to now."""
     start_date_str = pill.get("start_date")
     if not start_date_str:
-        # If no start_date, return the manually tracked count
         return pill.get("completed_takes", 0)
 
     from datetime import date
     start_date = date.fromisoformat(start_date_str)
-    current_date = datetime.now().date()
-    current_datetime = datetime.now()
+    start_hh, start_mm = pill["start_time"].split(":")
+    start_dt = datetime(start_date.year, start_date.month, start_date.day,
+                        int(start_hh), int(start_mm))
+    current_dt = datetime.now()
 
-    # Calculate total days elapsed
-    days_elapsed = (current_date - start_date).days
+    if current_dt < start_dt:
+        return 0
 
-    # Calculate total doses that should have occurred
-    total_doses_passed = days_elapsed * pill["times_per_day"]
+    # Precompute dose offsets in minutes from midnight (same pattern every day)
+    interval_min = (24 * 60) / pill["times_per_day"]
+    start_min = int(start_hh) * 60 + int(start_mm)
+    dose_offsets = [(start_min + i * interval_min) % (24 * 60)
+                    for i in range(pill["times_per_day"])]
 
-    # Check today's schedule to see which doses have passed
-    today_times = get_today_schedule(pill)
-    today_passed = sum(1 for t in today_times if t <= current_datetime)
-
-    return total_doses_passed + today_passed
+    count = 0
+    d = start_date
+    while d <= current_dt.date():
+        midnight = datetime(d.year, d.month, d.day)
+        for dm in dose_offsets:
+            dose_dt = midnight + timedelta(minutes=dm)
+            if start_dt <= dose_dt <= current_dt:
+                count += 1
+        d += timedelta(days=1)
+    return count
 
 
 # ================= ALARM CHECKER =================
@@ -275,7 +270,16 @@ async def alarm_loop(page, manager):
 
             # Check snooze
             snooze_until = pill.get("snoozed_until")
-            if snooze_until and now < datetime.fromisoformat(snooze_until):
+            if snooze_until:
+                snooze_until_dt = datetime.fromisoformat(snooze_until)
+                if now < snooze_until_dt:
+                    continue  # Still snoozed
+                # Snooze expired — clear it and fire alarm
+                manager.update_pill(pill["id"], {"snoozed_until": None})
+                total_takes = pill["duration_days"] * pill["times_per_day"]
+                completed = calculate_expected_takes(pill)
+                remaining = total_takes - completed
+                show_alarm_modal(page, pill, remaining, now.strftime("%H:%M"))
                 continue
 
             next_alarm = get_next_alarm(pill)
@@ -287,7 +291,39 @@ async def alarm_loop(page, manager):
 
 
 # ================= UI COMPONENTS =================
+def gradient_header(title, leading=None):
+    """Rounded gradient header bar (blue → magenta)."""
+    return ft.Container(
+        content=ft.Stack([
+            ft.Container(
+                gradient=ft.LinearGradient(
+                    begin=ft.Alignment(-1, 0),
+                    end=ft.Alignment(1, 0),
+                    colors=["#1565C0", "#3C1FA2", "#7B1FA2"],
+                ),
+                border_radius=ft.BorderRadius(0, 0, 24, 24),
+                padding=ft.Padding(16, 12, 16, 16),
+            ),
+            ft.Container(
+                content=ft.Row([
+                    leading if leading else ft.Container(width=40),
+                    ft.Text(title, size=18, weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE, expand=True,
+                            text_align=ft.TextAlign.CENTER),
+                    ft.Container(width=40),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding(8, 12, 8, 16),
+            ),
+        ]),
+        height=60,
+    )
+
+
 def show_alarm_modal(page, pill, remaining, take_time):
+    if alarm_audio:
+        alarm_audio.play()
+
     dlg = ft.AlertDialog(
         title=ft.Text(f"⏰ Take {pill['name']}", size=20),
         content=ft.Column([
@@ -306,22 +342,29 @@ def show_alarm_modal(page, pill, remaining, take_time):
                                   on_click=lambda e, p=pill["id"]: _handle_done(page, p)),
             ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
         ], tight=True),
-        on_dismiss=lambda e: page.update(),
+        on_dismiss=lambda e: (_stop_alarm(), page.update()),
     )
     page.show_dialog(dlg)
 
 
+def _stop_alarm():
+    if alarm_audio:
+        alarm_audio.pause()
+
+
 def _handle_snooze(page, pill_id):
+    _stop_alarm()
     manager.snooze_pill(pill_id)
-    page.pop_dialog()  # Close the alarm dialog
+    page.pop_dialog()
     snack_bar = ft.SnackBar(content=ft.Text("Snoozed for 10 minutes"), open=True)
     page.overlay.append(snack_bar)
     page.update()
 
 
 def _handle_done(page, pill_id):
+    _stop_alarm()
     manager.mark_done(pill_id)
-    page.pop_dialog()  # Close the alarm dialog
+    page.pop_dialog()
     snack_bar = ft.SnackBar(content=ft.Text("Marked as taken!"), open=True)
     page.overlay.append(snack_bar)
     refresh_views(page)
@@ -357,12 +400,20 @@ def create_pill_form(page, pill_data=None):
     if pill_data is None:
         pill_data = {}
 
+    start_time = pill_data.get("start_time", "18:00")
+    start_hh, start_mm = start_time.split(":")
+
+    today = datetime.now().date()
+    raw_date = pill_data.get("start_date", today.isoformat())
+    sd = datetime.fromisoformat(raw_date).date()
+
     if is_edit:
         def save(e):
             manager.update_pill(pill_data["id"], {
-                "name": name_ctrl.value,
-                "description": desc_ctrl.value,
-                "start_time": time_ctrl.value,
+                "name": name_ctrl.value.strip(),
+                "description": desc_ctrl.value.strip(),
+                "start_date": f"{year_ctrl.value.zfill(4)}-{mon_ctrl.value.zfill(2)}-{day_ctrl.value.zfill(2)}",
+                "start_time": f"{hour_ctrl.value.zfill(2)}:{min_ctrl.value.zfill(2)}",
                 "times_per_day": int(freq_ctrl.value or 1),
                 "duration_days": int(days_ctrl.value or 1),
                 "category": cat_ctrl.value,
@@ -372,9 +423,10 @@ def create_pill_form(page, pill_data=None):
     else:
         def save(e):
             manager.add_pill({
-                "name": name_ctrl.value,
-                "description": desc_ctrl.value,
-                "start_time": time_ctrl.value,
+                "name": name_ctrl.value.strip(),
+                "description": desc_ctrl.value.strip(),
+                "start_date": f"{year_ctrl.value.zfill(4)}-{mon_ctrl.value.zfill(2)}-{day_ctrl.value.zfill(2)}",
+                "start_time": f"{hour_ctrl.value.zfill(2)}:{min_ctrl.value.zfill(2)}",
                 "times_per_day": int(freq_ctrl.value or 1),
                 "duration_days": int(days_ctrl.value or 1),
                 "category": cat_ctrl.value,
@@ -384,25 +436,43 @@ def create_pill_form(page, pill_data=None):
 
     name_ctrl = ft.TextField(label="Pill Name", value=pill_data.get("name", ""), hint_text="e.g. Ibuprofen")
     desc_ctrl = ft.TextField(label="Description/Notes", value=pill_data.get("description", ""),
-                             hint_text="e.g. After dinner")
-    time_ctrl = ft.TextField(label="Start Time (HH:MM)", value=pill_data.get("start_time", "18:00"),
-                             keyboard_type=ft.KeyboardType.NUMBER, hint_text="24h format")
-    freq_ctrl = ft.TextField(label="Times per Day", value=str(pill_data.get("times_per_day", 1)),
-                             keyboard_type=ft.KeyboardType.NUMBER, hint_text="e.g. 2")
-    days_ctrl = ft.TextField(label="Duration (Days)", value=str(pill_data.get("duration_days", 7)),
-                             keyboard_type=ft.KeyboardType.NUMBER, hint_text="e.g. 14")
+                             hint_text="e.g. 1/2 After Dinner")
+    year_ctrl = ft.TextField(label="YYYY", value=str(sd.year),
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=2)
+    mon_ctrl  = ft.TextField(label="MM", value=str(sd.month).zfill(2),
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
+    day_ctrl  = ft.TextField(label="DD", value=str(sd.day).zfill(2),
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
+    hour_ctrl = ft.TextField(label="HH", value=start_hh,
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
+    min_ctrl  = ft.TextField(label="MM", value=start_mm,
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
+    freq_ctrl = ft.TextField(label="Times/Day", value=str(pill_data.get("times_per_day", 1)),
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
+    days_ctrl = ft.TextField(label="Days", value=str(pill_data.get("duration_days", 7)),
+                             keyboard_type=ft.KeyboardType.NUMBER, expand=1)
 
     # Get category names from manager
     categories = manager.get_categories()
     cat_ctrl = ft.Dropdown(
         label="Category",
         options=[ft.dropdown.Option(key=k, text=categories.get(k, k)) for k in CATEGORIES.keys()],
-        value=pill_data.get("category", "primary")
+        value=pill_data.get("category", "primary"),
+        expand=True,
     )
 
     dlg = ft.AlertDialog(
         title=ft.Text(title, size=18),
-        content=ft.Column([name_ctrl, desc_ctrl, time_ctrl, freq_ctrl, days_ctrl, cat_ctrl], tight=True, width=300),
+        content=ft.Column([
+            name_ctrl,
+            desc_ctrl,
+            ft.Text("Start Date", size=12, color=ft.Colors.GREY_600),
+            ft.Row([year_ctrl, mon_ctrl, day_ctrl], spacing=8),
+            ft.Text("Start Time", size=12, color=ft.Colors.GREY_600),
+            ft.Row([hour_ctrl, min_ctrl], spacing=8),
+            ft.Row([freq_ctrl, days_ctrl], spacing=8),
+            cat_ctrl,
+        ], tight=True, width=300),
         actions=[
             ft.TextButton("Cancel", on_click=lambda e: page.pop_dialog()),
             ft.FilledButton("Save", icon=ft.icons.Icons.SAVE, on_click=save),
@@ -467,7 +537,7 @@ def create_dashboard_view(page_ref=None):
             row = ft.Card(
                 content=ft.Container(
                     content=ft.Row([
-                        # Next time (large, on the left)
+                        # Left: next take time
                         ft.Container(
                             content=ft.Column([
                                 ft.Text(next_time_str, size=24, weight=ft.FontWeight.BOLD, color=main_color),
@@ -477,50 +547,52 @@ def create_dashboard_view(page_ref=None):
                             alignment=ft.Alignment.CENTER,
                         ),
                         ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
-                        # Pill info
+                        # Right: stacked info
                         ft.Column([
-                            ft.Text(p["name"], size=16, weight=ft.FontWeight.BOLD),
-                            ft.Text(p["description"], size=11, color=ft.Colors.GREY_600),
-                            ft.Container(height=4),
+                            # Row 1: name (left) | category (right)
                             ft.Row([
-                                ft.Text(f"✓ {completed_takes}", size=11, color=ft.Colors.GREEN_600),
-                                ft.Text("•", size=11, color=ft.Colors.GREY_400),
-                                ft.Text(f"⏳ {remaining_takes} left", size=11, color=ft.Colors.ORANGE_600),
-                                ft.Text("•", size=11, color=ft.Colors.GREY_400),
-                                ft.Text(f"🗓️ {start_date_display}", size=11, color=ft.Colors.PURPLE_600),
-                                ft.Text("•", size=11, color=ft.Colors.GREY_400),
-                                ft.Text(f"📅 {last_day_str}", size=11, color=ft.Colors.BLUE_600),
-                            ], spacing=4),
+                                ft.Text(p["name"], size=15, weight=ft.FontWeight.BOLD, expand=True),
+                                ft.Text(category_name, size=10, color=ft.Colors.GREY_600),
+                            ]),
+                            # Row 2: description
+                            ft.Row([
+                                ft.Text(p["description"], size=11, color=ft.Colors.GREY_600, expand=True),
+                            ]),
+                            # Row 3: scheduled times (left) | buttons (right)
+                            ft.Row([
+                                ft.Text(times_str, size=11, weight=ft.FontWeight.W_500, color=main_color, expand=True),
+                                ft.IconButton(
+                                    icon=ft.icons.Icons.TOGGLE_ON,
+                                    icon_color=ft.Colors.GREEN_600,
+                                    icon_size=18,
+                                    tooltip="Disable",
+                                    on_click=lambda e, pid=p["id"]: _toggle_pill(e, pid)
+                                ),
+                                ft.IconButton(
+                                    icon=ft.icons.Icons.EDIT,
+                                    icon_size=18,
+                                    on_click=lambda e, p_data=p: _edit_pill(e, p_data)
+                                ),
+                                ft.IconButton(
+                                    icon=ft.icons.Icons.DELETE,
+                                    icon_color=ft.Colors.RED_400,
+                                    icon_size=18,
+                                    on_click=lambda e, pid=p["id"]: _delete_pill(e, pid)
+                                ),
+                            ], spacing=0),
+                            # Row 4: stats
+                            ft.Row([
+                                ft.Text(f"✓ {completed_takes}", size=10, color=ft.Colors.GREEN_600),
+                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
+                                ft.Text(f"⏳ {remaining_takes}", size=10, color=ft.Colors.ORANGE_600),
+                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
+                                ft.Text(f"🗓 {start_date_display}", size=10, color=ft.Colors.PURPLE_600),
+                                ft.Text("•", size=10, color=ft.Colors.GREY_400),
+                                ft.Text(f"📅 {last_day_str}", size=10, color=ft.Colors.BLUE_600),
+                            ], spacing=3),
                         ], expand=True, spacing=2),
-                        # Scheduled times (on the right)
-                        ft.Column([
-                            ft.Text(times_str, size=12, weight=ft.FontWeight.W_500, color=main_color, text_align=ft.TextAlign.RIGHT),
-                            ft.Text(category_name, size=10, color=ft.Colors.GREY_600, text_align=ft.TextAlign.RIGHT),
-                        ], horizontal_alignment=ft.CrossAxisAlignment.END),
-                        ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
-                        # Action buttons
-                        ft.Row([
-                            ft.IconButton(
-                                icon=ft.icons.Icons.TOGGLE_ON if p.get("active", True) else ft.icons.Icons.TOGGLE_OFF,
-                                icon_color=ft.Colors.GREEN_600 if p.get("active", True) else ft.Colors.GREY_400,
-                                icon_size=20,
-                                tooltip="Disable" if p.get("active", True) else "Enable",
-                                on_click=lambda e, pid=p["id"]: _toggle_pill(e, pid)
-                            ),
-                            ft.IconButton(
-                                icon=ft.icons.Icons.EDIT,
-                                icon_size=20,
-                                on_click=lambda e, p_data=p: _edit_pill(e, p_data)
-                            ),
-                            ft.IconButton(
-                                icon=ft.icons.Icons.DELETE,
-                                icon_color=ft.Colors.RED_400,
-                                icon_size=20,
-                                on_click=lambda e, pid=p["id"]: _delete_pill(e, pid)
-                            ),
-                        ], spacing=0),
                     ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=12,
+                    padding=10,
                     bgcolor=bg_color,
                 ),
                 margin=ft.Margin.only(bottom=8),
@@ -631,17 +703,13 @@ def create_dashboard_view(page_ref=None):
             page_ref.update()
 
     view.controls = [
-        ft.AppBar(
-            title=ft.Text("⏰ Active Alarms"),
-            center_title=True,
-            bgcolor=ft.Colors.BLUE_GREY_100,
-        ),
+        gradient_header("⏰ Active Alarms"),
         ft.Container(
             content=ft.Column([
                 ft.Container(height=10),
                 ft.Row([
                     ft.FilledButton(
-                        "Add New Pill",
+                        "Add",
                         icon=ft.icons.Icons.ADD,
                         on_click=lambda e: create_pill_form(page_ref) if page_ref else None
                     ),
@@ -651,7 +719,7 @@ def create_dashboard_view(page_ref=None):
                         on_click=go_to_categories
                     ),
                     ft.FilledButton(
-                        "Today's Schedule",
+                        "Schedule",
                         icon=ft.icons.Icons.CALENDAR_TODAY,
                         on_click=go_to_timeline
                     ),
@@ -818,16 +886,11 @@ def create_timeline_view(page_ref=None):
     timeline_column = ft.Column(render_timeline(), scroll=ft.ScrollMode.AUTO, expand=True)
 
     view.controls = [
-        ft.AppBar(
-            title=ft.Text(f"📅 Today's Schedule"),
-            center_title=True,
-            bgcolor=ft.Colors.BLUE_GREY_100,
-            leading=ft.IconButton(
-                icon=ft.icons.Icons.ARROW_BACK,
-                tooltip="Back to Alarms",
-                on_click=go_to_dashboard
-            ),
-        ),
+        gradient_header("📅 Today's Schedule", leading=ft.IconButton(
+            icon=ft.icons.Icons.ARROW_BACK,
+            icon_color=ft.Colors.WHITE,
+            on_click=go_to_dashboard,
+        )),
         ft.Container(
             content=ft.Column([
                 ft.Text(f"{datetime.now().strftime('%Y-%m-%d')}", size=16, weight=ft.FontWeight.W_500),
@@ -878,20 +941,20 @@ def create_categories_view(page_ref=None):
                     content=ft.Row([
                         # Color indicator
                         ft.Container(
-                            width=60,
-                            height=60,
+                            width=48,
+                            height=48,
                             bgcolor=main_color,
-                            border_radius=8,
+                            border_radius=6,
                         ),
                         # Category info and edit
                         ft.Column([
                             name_field,
                         ], expand=True, spacing=4),
                     ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=12,
+                    padding=8,
                     bgcolor=bg_color,
                 ),
-                margin=ft.Margin.only(bottom=12),
+                margin=ft.Margin.only(bottom=6),
             )
             controls.append(card)
 
@@ -920,16 +983,11 @@ def create_categories_view(page_ref=None):
     categories_column = ft.Column(render_categories(), scroll=ft.ScrollMode.AUTO, expand=True)
 
     view.controls = [
-        ft.AppBar(
-            title=ft.Text("🏷️ Manage Categories"),
-            center_title=True,
-            bgcolor=ft.Colors.BLUE_GREY_100,
-            leading=ft.IconButton(
-                icon=ft.icons.Icons.ARROW_BACK,
-                tooltip="Back to Alarms",
-                on_click=go_to_dashboard
-            ),
-        ),
+        gradient_header("🏷️ Manage Categories", leading=ft.IconButton(
+            icon=ft.icons.Icons.ARROW_BACK,
+            icon_color=ft.Colors.WHITE,
+            on_click=go_to_dashboard,
+        )),
         ft.Container(
             content=ft.Column([
                 ft.Container(height=10),
@@ -951,8 +1009,11 @@ def create_categories_view(page_ref=None):
 
 
 # ================= APP INITIALIZATION =================
+alarm_audio = None
+
+
 def main(p: ft.Page):
-    global manager, page
+    global manager, page, alarm_audio
     manager = PillManager(STORAGE_FILE)
     page = p
 
@@ -961,6 +1022,15 @@ def main(p: ft.Page):
     page.window_width = 360
     page.window_height = 640
     page.window_min_width = 320
+
+    if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+        alarm_audio = fta.Audio(
+            src="/alarm.wav",
+            autoplay=False,
+            volume=1.0,
+            release_mode=fta.ReleaseMode.LOOP,
+        )
+        page.overlay.append(alarm_audio)
 
     def on_route_change(e):
         page.views.clear()

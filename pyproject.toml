@@ -1,0 +1,11 @@
+[tool.flet]
+org = "com.pjn2work"
+product = "AlarmPill"
+description = "Medication alarm and schedule manager"
+
+[tool.flet.app]
+name = "apill"
+
+[tool.flet.build]
+build_number = 1
+build_version = "1.0.0"

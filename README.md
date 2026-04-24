@@ -1,4 +1,4 @@
-# QwenPill - Medication Reminder App
+# APill - Medication Reminder App
 
 A simple medication reminder and schedule tracking application built with Flet.
 
@@ -37,28 +37,49 @@ The app will open in a window. You can also access it at `http://127.0.0.1:8550`
 
 ### Android (APK)
 
-1. **Build the APK**
+#### One-time setup
+
+The build requires Android SDK `platforms;android-35`. The bundled `sdkmanager` needs `--no_https` to reach Google's servers. Run this once:
 
 ```bash
-flet build apk
+yes | ~/Library/Android/sdk/cmdline-tools/latest/bin/sdkmanager --no_https "platforms;android-35"
 ```
 
-The APK will be generated at `build/apk/app-release.apk`
+Python 3.11+ on macOS may have SSL issues downloading the Flet build template from GitHub. Download it manually once with curl:
 
-2. **Install on Device**
-
-**Option A: Direct Transfer**
-- Transfer the APK file to your phone
-- Open the APK file on your phone
-- Allow installation from unknown sources if prompted
-- Install the app
-
-**Option B: Using ADB (for developers)**
-- Enable USB debugging on your phone
-- Connect phone via USB
-- Run:
 ```bash
-adb install build/apk/app-release.apk
+curl -L -o /tmp/flet-build-template.zip \
+  "https://github.com/flet-dev/flet/releases/download/v0.84.0/flet-build-template.zip"
+```
+
+#### Build the APK
+
+```bash
+flet build apk --yes --template /tmp/flet-build-template.zip
+```
+
+The APK will be generated at `build/apk/APill.apk`.
+
+#### Install on Device via ADB
+
+1. Enable **USB debugging** in Developer Options on your phone
+2. Connect the phone via USB and accept the trust prompt on the phone
+3. Verify the device is detected:
+
+```bash
+adb devices
+```
+
+3. Install:
+
+```bash
+adb install build/apk/APill.apk
+```
+
+To reinstall after a new build (without uninstalling first):
+
+```bash
+adb install -r build/apk/APill.apk
 ```
 
 ### iOS (IPA)
