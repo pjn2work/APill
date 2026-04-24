@@ -301,7 +301,7 @@ def gradient_header(title, leading=None):
                     end=ft.Alignment(1, 0),
                     colors=["#1565C0", "#3C1FA2", "#7B1FA2"],
                 ),
-                border_radius=ft.BorderRadius(0, 0, 24, 24),
+                border_radius=ft.BorderRadius(24, 24, 10, 10),
                 padding=ft.Padding(16, 12, 16, 16),
             ),
             ft.Container(
@@ -472,7 +472,7 @@ def create_pill_form(page, pill_data=None):
             ft.Row([hour_ctrl, min_ctrl], spacing=8),
             ft.Row([freq_ctrl, days_ctrl], spacing=8),
             cat_ctrl,
-        ], tight=True, width=300),
+        ], tight=True, scroll=ft.ScrollMode.AUTO, width=300),
         actions=[
             ft.TextButton("Cancel", on_click=lambda e: page.pop_dialog()),
             ft.FilledButton("Save", icon=ft.icons.Icons.SAVE, on_click=save),
@@ -690,7 +690,6 @@ def create_dashboard_view(page_ref=None):
     def go_to_timeline(e):
         if page_ref:
             page_ref.views.clear()
-            page_ref.views.append(create_dashboard_view(page_ref))
             page_ref.views.append(create_timeline_view(page_ref))
             page_ref.title = "📅 Daily Timeline"
             page_ref.update()
@@ -793,7 +792,18 @@ def create_timeline_view(page_ref=None):
         sorted_times = sorted(time_groups.keys())
 
         controls = []
-        prev_time = None
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Text("00:00", size=12, color=ft.Colors.GREY_400),
+                    width=60,
+                ),
+                ft.Container(height=1, bgcolor=ft.Colors.GREY_300, expand=True),
+            ], spacing=10),
+            margin=ft.Margin.only(left=20, right=20),
+        ))
+        prev_time = start_of_day
         current_time_shown = False
 
         for time_str in sorted_times:
@@ -880,6 +890,26 @@ def create_timeline_view(page_ref=None):
                 ], spacing=10),
                 margin=ft.Margin.only(left=20, right=20),
             ))
+            prev_time = now
+
+        # Extend timeline to end of day
+        end_of_day = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        last_time = prev_time if prev_time else now
+        if last_time < end_of_day:
+            diff_min = (end_of_day - last_time).total_seconds() / 60
+            controls.append(ft.Container(height=max(10, diff_min * TIMELINE_SCALE)))
+
+        controls.append(ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Text("23:59", size=12, color=ft.Colors.GREY_400),
+                    width=60,
+                ),
+                ft.Container(height=1, bgcolor=ft.Colors.GREY_300, expand=True),
+            ], spacing=10),
+            margin=ft.Margin.only(left=20, right=20),
+        ))
+        controls.append(ft.Container(height=40))
 
         return controls
 
@@ -991,14 +1021,13 @@ def create_categories_view(page_ref=None):
         ft.Container(
             content=ft.Column([
                 ft.Container(height=10),
-                categories_column,
-                ft.Container(height=10),
                 ft.FilledButton(
                     "Save All",
                     icon=ft.icons.Icons.SAVE,
                     on_click=save_all_categories
                 ),
                 ft.Container(height=10),
+                categories_column,
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
             padding=10,
             expand=True,
@@ -1024,6 +1053,7 @@ def main(p: ft.Page):
     page.window_min_width = 320
 
     if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+        page.window.full_screen = True
         alarm_audio = fta.Audio(
             src="/alarm.wav",
             autoplay=False,
@@ -1037,11 +1067,10 @@ def main(p: ft.Page):
 
         # Add views based on route
         if page.route == "/timeline":
-            page.views.append(create_dashboard_view(page))
             page.views.append(create_timeline_view(page))
             page.title = "📅 Daily Timeline"
         elif page.route == "/categories":
-            # Only show categories view, not dashboard underneath
+            page.views.append(create_dashboard_view(page))
             page.views.append(create_categories_view(page))
             page.title = "🏷️ Categories"
         else:
@@ -1050,7 +1079,11 @@ def main(p: ft.Page):
 
         page.update()
 
+    def on_view_pop(e):
+        page.go("/")
+
     page.on_route_change = on_route_change
+    page.on_view_pop = on_view_pop
     page.route = "/"
     on_route_change(None)
 
