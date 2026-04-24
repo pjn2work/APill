@@ -215,17 +215,25 @@ def get_today_schedule(pill):
 def get_next_alarm(pill):
     """Returns the next scheduled datetime for this pill"""
     now = datetime.now()
-    today_times = get_today_schedule(pill)
-    for t in today_times:
-        if t > now:
+    _sh, _sm = pill["start_time"].split(":")
+    start_d = date.fromisoformat(pill.get("start_date", now.date().isoformat()))
+    start_dt = datetime(start_d.year, start_d.month, start_d.day, int(_sh), int(_sm))
+
+    # Course hasn't started yet
+    if start_dt > now:
+        return start_dt
+
+    # Find next valid dose today (must be after now and after start_dt)
+    for t in get_today_schedule(pill):
+        if t > now and t >= start_dt:
             return t
-    # If all today's times passed, schedule tomorrow's first
-    tomorrow = (now + timedelta(days=1)).replace(
-        hour=int(pill["start_time"].split(":")[0]),
-        minute=int(pill["start_time"].split(":")[1]),
-        second=0, microsecond=0
-    )
-    return tomorrow
+
+    # All today's valid times passed — find tomorrow's first dose
+    start_min = int(_sh) * 60 + int(_sm)
+    interval = 1440 / pill["times_per_day"]
+    first_offset = min((start_min + i * interval) % 1440 for i in range(pill["times_per_day"]))
+    tomorrow_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return tomorrow_midnight + timedelta(minutes=first_offset)
 
 
 def calculate_expected_takes(pill):
@@ -802,7 +810,7 @@ def create_dashboard_view(page_ref=None):
                     ),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
                 pills_column,
-                ft.Divider(),
+                ft.Divider(height=1),
                 ft.Row([
                     ft.OutlinedButton(
                         "Import",
@@ -814,7 +822,7 @@ def create_dashboard_view(page_ref=None):
                         icon=ft.icons.Icons.DOWNLOAD,
                         on_click=do_export,
                     ),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
                 ft.Container(height=15),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
             padding=10,
