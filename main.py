@@ -322,7 +322,7 @@ def gradient_header(title, leading=None):
 
 def show_alarm_modal(page, pill, remaining, take_time):
     if alarm_audio:
-        alarm_audio.play()
+        asyncio.create_task(alarm_audio.play())
 
     dlg = ft.AlertDialog(
         title=ft.Text(f"⏰ Take {pill['name']}", size=20),
@@ -349,7 +349,7 @@ def show_alarm_modal(page, pill, remaining, take_time):
 
 def _stop_alarm():
     if alarm_audio:
-        alarm_audio.pause()
+        asyncio.create_task(alarm_audio.pause())
 
 
 def _handle_snooze(page, pill_id):
@@ -1030,7 +1030,7 @@ def main(p: ft.Page):
             volume=1.0,
             release_mode=fta.ReleaseMode.LOOP,
         )
-        page.overlay.append(alarm_audio)
+        page.services.append(alarm_audio)
 
     def on_route_change(e):
         page.views.clear()

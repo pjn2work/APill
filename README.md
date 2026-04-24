@@ -55,10 +55,17 @@ curl -L -o /tmp/flet-build-template.zip \
 #### Build the APK
 
 ```bash
-flet build apk --yes --template /tmp/flet-build-template.zip
+flet build apk --yes --template /tmp/flet-build-template.zip --skip-flutter-doctor
 ```
 
 The APK will be generated at `build/apk/APill.apk`.
+
+> **Important — after changing `requirements.txt`:** Flet has a caching bug where adding a new package (e.g. `flet-audio`) doesn't invalidate the package hash. You must delete the hash stamp before rebuilding, otherwise the new package won't be bundled:
+> ```bash
+> rm -f build/.hash/package
+> flet build apk --yes --template /tmp/flet-build-template.zip --skip-flutter-doctor
+> ```
+> Then verify `build/flutter/pubspec.yaml` contains `flet_audio` and run `cd build/flutter && flutter pub get` if it's missing.
 
 #### Install on Device via ADB
 
@@ -97,22 +104,22 @@ The IPA will be generated at `build/ipa/`. You'll need to sign it with your Appl
 Since the alarm checker runs in the background, Android may suspend the app. To ensure alarms work reliably:
 
 ### 1. Disable Battery Optimization
-- Go to **Settings → Apps → QwenPill → Battery**
+- Go to **Settings → Apps → APill → Battery**
 - Set to **Unrestricted** or **No restrictions**
 
 ### 2. Allow Background Activity
-- **Settings → Apps → QwenPill → Mobile data & Wi-Fi**
+- **Settings → Apps → APill → Mobile data & Wi-Fi**
 - Enable **Background data**
 
 ### 3. Autostart Permission (varies by manufacturer)
-- **Xiaomi/MIUI**: Security → Autostart → Enable for QwenPill
-- **Huawei**: App Launch → Enable for QwenPill
+- **Xiaomi/MIUI**: Security → Autostart → Enable for APill
+- **Huawei**: App Launch → Enable for APill
 - **Samsung**: Device care → Battery → App power management → Add to Never sleeping apps
-- **OnePlus**: Battery → Battery optimization → Don't optimize QwenPill
+- **OnePlus**: Battery → Battery optimization → Don't optimize APill
 
 ### 4. Notification Permissions
 - Make sure notifications are enabled for the app
-- **Settings → Apps → QwenPill → Notifications** → Enable
+- **Settings → Apps → APill → Notifications** → Enable
 
 ## Data Storage
 
