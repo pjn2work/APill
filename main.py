@@ -3,7 +3,7 @@ import flet_audio as fta
 import json
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import uuid
 
 # ================= CONFIG & CONSTANTS =================
@@ -234,7 +234,6 @@ def calculate_expected_takes(pill):
     if not start_date_str:
         return pill.get("completed_takes", 0)
 
-    from datetime import date
     start_date = date.fromisoformat(start_date_str)
     start_hh, start_mm = pill["start_time"].split(":")
     start_dt = datetime(start_date.year, start_date.month, start_date.day,
@@ -341,10 +340,10 @@ def gradient_header(title, leading=None):
                     ft.Container(width=40),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding(8, 12, 8, 16),
+                padding=ft.Padding(8, 20, 8, 4),
             ),
         ]),
-        height=60,
+        height=72,
     )
 
 
@@ -552,11 +551,14 @@ def create_dashboard_view(page_ref=None):
             start_date_str = p.get("start_date", datetime.now().date().isoformat())
             start_date_display = datetime.fromisoformat(start_date_str).strftime("%Y-%m-%d")
 
-            # Calculate last day
-            import math
-            remaining_days = math.ceil(remaining_takes / p["times_per_day"])
-            last_day = datetime.now() + timedelta(days=remaining_days - 1)
-            last_day_str = last_day.strftime("%Y-%m-%d")
+            # Calculate last day: start_dt + (total_takes - 1) * interval
+            start_date_obj = date.fromisoformat(start_date_str)
+            _sh, _sm = p["start_time"].split(":")
+            start_dt = datetime(start_date_obj.year, start_date_obj.month, start_date_obj.day,
+                                int(_sh), int(_sm))
+            total_takes = p["duration_days"] * p["times_per_day"]
+            interval_min = 1440 / p["times_per_day"]
+            last_day_str = (start_dt + timedelta(minutes=(total_takes - 1) * interval_min)).strftime("%Y-%m-%d")
 
             # Get category name
             category_name = categories.get(p["category"], p["category"])
@@ -782,7 +784,6 @@ def create_dashboard_view(page_ref=None):
         gradient_header("⏰ Active Alarms"),
         ft.Container(
             content=ft.Column([
-                ft.Container(height=10),
                 ft.Row([
                     ft.FilledButton(
                         "Add",
@@ -800,7 +801,6 @@ def create_dashboard_view(page_ref=None):
                         on_click=go_to_timeline
                     ),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-                ft.Container(height=10),
                 pills_column,
                 ft.Divider(),
                 ft.Row([
@@ -815,7 +815,7 @@ def create_dashboard_view(page_ref=None):
                         on_click=do_export,
                     ),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-                ft.Container(height=10),
+                ft.Container(height=15),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
             padding=10,
             expand=True,
@@ -1009,6 +1009,7 @@ def create_timeline_view(page_ref=None):
         gradient_header("📅 Today's Schedule", leading=ft.IconButton(
             icon=ft.icons.Icons.ARROW_BACK,
             icon_color=ft.Colors.WHITE,
+            icon_size=32,
             on_click=go_to_dashboard,
         )),
         ft.Container(
@@ -1017,7 +1018,7 @@ def create_timeline_view(page_ref=None):
                 ft.Container(height=10),
                 timeline_column,
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
-            padding=10,
+            padding=0,
             expand=True,
         ),
     ]
@@ -1106,11 +1107,11 @@ def create_categories_view(page_ref=None):
         gradient_header("🏷️ Manage Categories", leading=ft.IconButton(
             icon=ft.icons.Icons.ARROW_BACK,
             icon_color=ft.Colors.WHITE,
+            icon_size=32,
             on_click=go_to_dashboard,
         )),
         ft.Container(
             content=ft.Column([
-                ft.Container(height=10),
                 ft.FilledButton(
                     "Save All",
                     icon=ft.icons.Icons.SAVE,
